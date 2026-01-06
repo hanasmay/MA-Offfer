@@ -1,7 +1,6 @@
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
-from difflib import get_close_matches
 import math
 
 # --- 1. 马萨诸塞州 RMV 办公室数据库 (ZMA 代码) ---
@@ -25,82 +24,74 @@ MA_OFFICES = {
     "688": {"name": "Wilmington", "lat": 42.5584, "lon": -71.1684, "addr": "355 Main St"}
 }
 
-# --- 2. 距离计算辅助函数 ---
+# 距离计算函数
 def haversine(lat1, lon1, lat2, lon2):
-    # 计算地球两点间距离 (KM)
     R = 6371
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
+    dlat, dlon = math.radians(lat2-lat1), math.radians(lon2-lon1)
     a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-    return R * c
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
-# --- 3. Streamlit 界面设置 ---
-st.set_page_config(page_title="MA RMV 办公室分布图", layout="wide")
-st.markdown("<h2 style='text-align: center;'>马萨诸塞州 (MA) RMV 签发办公室智能匹配系统</h2>", unsafe_allow_html=True)
+# --- 2. 界面设计 ---
+st.set_page_config(page_title="MA RMV Finder", layout="wide")
+st.markdown("<h2 style='text-align: center;'>MA 签发办公室地图定位系统</h2>", unsafe_allow_html=True)
 
-# 侧边栏搜索逻辑
-with st.sidebar:
-    st.header("🔍 查找最近的 RMV")
-    search_city = st.text_input("输入您所在的城市 (例如: Boston):", "").strip().title()
-    st.write("---")
-    st.info("本系统将根据坐标自动匹配 ZMA 代码。")
+# 搜索输入
+search_query = st.sidebar.text_input("📍 输入城市名称并按回车 (例如: Worcester, MA):", "")
 
-# --- 4. 逻辑处理：搜索定位与距离排序 ---
-target_lat, target_lon = 42.3601, -71.0589  # 默认中心点：Boston
-if search_city:
-    # 模拟城市坐标匹配 (实际应用可接入 API)
-    # 简单示例：如果搜索 Boston，中心移向 Boston RMV
-    city_matches = get_close_matches(search_city, [v["name"].split(' ')[0] for v in MA_OFFICES.values()], n=1, cutoff=0.4)
-    if city_matches:
-        for code, info in MA_OFFICES.items():
-            if city_matches[0] in info["name"]:
-                target_lat, target_lon = info["lat"], info["lon"]
-                st.sidebar.success(f"已定位到: {info['name']}")
-                break
+# 默认地图中心 (波士顿)
+view_lat, view_lon = 42.3601, -71.0589
+found_location = None
 
-# 计算所有办公室与目标点的距离并排序
-recommendations = []
+# --- 3. 核心搜索与标记逻辑 ---
+# 注意：在 Streamlit 环境中，我们通常需要调用地理编码 API。
+# 这里我为您演示如何结合搜索结果进行标记。
+if search_query:
+    # 模拟地理编码：如果用户输入了包含办公室名称的城市
+    from geopy.geocoders import Nominatim
+    geolocator = Nominatim(user_agent="ma_rmv_finder")
+    try:
+        location = geolocator.geocode(search_query + ", Massachusetts, USA")
+        if location:
+            view_lat, view_lon = location.latitude, location.longitude
+            found_location = [view_lat, view_lon]
+            st.sidebar.success(f"已标记城市: {location.address}")
+    except:
+        st.sidebar.error("无法获取该城市坐标，请检查拼写。")
+
+# 计算距离并排序
+sorted_offices = []
 for code, info in MA_OFFICES.items():
-    dist = haversine(target_lat, target_lon, info["lat"], info["lon"])
-    recommendations.append({"code": code, "name": info["name"], "dist": dist, "addr": info["addr"], "lat": info["lat"], "lon": info["lon"]})
+    dist = haversine(view_lat, view_lon, info["lat"], info["lon"])
+    sorted_offices.append({**info, "code": code, "dist": dist})
+sorted_offices.sort(key=lambda x: x["dist"])
 
-recommendations.sort(key=lambda x: x["dist"])
+# --- 4. 地图显示 ---
+m = folium.Map(location=[view_lat, view_lon], zoom_start=10, tiles="cartodbpositron")
 
-# --- 5. 地图渲染 (带有鼠标触碰显示功能) ---
-m = folium.Map(location=[target_lat, target_lon], zoom_start=9, tiles="cartodbpositron")
-
-# 添加所有办公室标记
-for rec in recommendations:
-    # 构造悬停显示的文本 (HTML 格式)
-    hover_html = f"""
-        <b>办公室名称:</b> {rec['name']}<br>
-        <b>ZMA 代码:</b> {rec['code']}<br>
-        <b>地址:</b> {rec['addr']}<br>
-        <b>距离:</b> {rec['dist']:.2f} KM
-    """
-    
+# 标记用户搜索的城市 (蓝色图钉)
+if found_location:
     folium.Marker(
-        location=[rec["lat"], rec["lon"]],
-        tooltip=folium.Tooltip(hover_html, sticky=True), # 鼠标触碰显示
-        icon=folium.Icon(color="blue" if rec["dist"] < 0.1 else "red", icon="info-sign")
+        location=found_location,
+        popup="您搜索的位置",
+        icon=folium.Icon(color="blue", icon="screenshot")
     ).add_to(m)
 
-# --- 6. 页面布局 ---
-col_map, col_list = st.columns([3, 1.5])
+# 标记所有 RMV 办公室 (红色图钉)
+for office in sorted_offices:
+    folium.Marker(
+        location=[office["lat"], office["lon"]],
+        tooltip=f"代码: {office['code']} | {office['name']}",
+        popup=f"地址: {office['addr']}<br>距离: {office['dist']:.2f} km",
+        icon=folium.Icon(color="red", icon="home")
+    ).add_to(m)
 
-with col_map:
-    st.subheader("🗺️ RMV 分布地图")
-    st_folium(m, width=800, height=600)
+# 页面布局
+col_m, col_t = st.columns([3, 1])
+with col_m:
+    st_folium(m, width=850, height=600, key="ma_map")
 
-with col_list:
-    st.subheader("📍 最近的 3 个办公室")
-    for i in range(min(3, len(recommendations))):
-        rec = recommendations[i]
-        st.warning(f"**推荐 {i+1}: {rec['name']}**")
-        st.write(f"- **ZMA 代码**: `{rec['code']}`")
-        st.write(f"- **详细地址**: {rec['addr']}")
-        st.write(f"- **直线距离**: {rec['dist']:.2f} KM")
-        st.write("---")
-
-    st.info("💡 提示：在左侧搜索城市后，列表将自动更新。")
+with col_t:
+    st.subheader("📍 最近的办公室")
+    for i in range(min(3, len(sorted_offices))):
+        o = sorted_offices[i]
+        st.info(f"**{o['name']}** (ZMA: `{o['code']}`)\n\n距离: {o['dist']:.2f} km\n\n地址: {o['addr']}")
